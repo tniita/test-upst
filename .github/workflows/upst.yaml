@@ -1,0 +1,27 @@
+name: Get GitHub Actions JWT
+on:
+  workflow_dispatch:  # 手動実行用
+  push:
+    branches: [main]
+
+jobs:
+  get-jwt:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # JWTトークン取得に必要
+      contents: read
+    
+    steps:
+      - name: Get GitHub Actions JWT
+        run: |
+          # 環境変数からJWTを取得
+          echo "JWT Token: $ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          echo "JWT URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          
+          # JWTを実際に取得
+          JWT=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                     -H "Accept: application/json; api-version=2.0" \
+                     "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://github.com/your-org" \
+                     | jq -r '.value')
+          
+          echo "Generated JWT: $JWT"
