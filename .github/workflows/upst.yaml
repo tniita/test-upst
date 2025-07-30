@@ -42,6 +42,3 @@ jobs:
             --auth security_token \
             --security-token-env-var UPST \
             --key-file $PRIVATE_KEY
-
-          path: jwt_token.txt
-          retention-days: 1
