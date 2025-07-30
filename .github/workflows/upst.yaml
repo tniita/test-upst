@@ -1,48 +1,63 @@
-name: Get GitHub Actions JWT
-on:
-  workflow_dispatch:
-    inputs:
-      audience:
-        description: 'JWT audience'
-        required: false
-        default: 'oci'
+name: Generate JWT and RSA key pair
+on: workflow_dispatch   # 手動実行。定期実行なら cron を追加
 
 permissions:
-  id-token: write   # ★ OIDC を有効化
-  contents: read    # 例: リポジトリ読み取り権限
+  contents: read        # リポジトリ読み取りだけ（OIDC は使わないので id‑token 権限不要）
 
 jobs:
-  deploy:
+  build-jwt:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Restore private key
+      # 1) RSA 2048bit の鍵ペアを生成
+      - name: Generate RSA key pair
         run: |
-          mkdir -p ~/.oci
-          echo "${{ secrets.OCI_UPST_PRIVATE_KEY_PEM }}" > ~/.oci/oci_upst_key.pem
-          chmod 600 ~/.oci/oci_upst_key.pem
+          mkdir -p keys
+          openssl genrsa -out keys/private.pem 2048
+          openssl rsa -pubout -in keys/private.pem -out keys/public.pem
+          echo "✅ RSA key pair generated in ./keys"
 
-      - name: Get OIDC JWT for this job
-        id: oidc
-        uses: actions/github-script@v7
+      # 2) PyJWT をインストール
+      - name: Install PyJWT
+        run: pip install --quiet PyJWT cryptography
+
+      # 3) 秘密鍵で JWT を署名して出力
+      - name: Create signed JWT
+        id: jwt
+        run: |
+          python - <<'PY'
+          import time, jwt, pathlib, os, json
+
+          # 鍵読み込み
+          key_path = pathlib.Path("keys/private.pem")
+          private_key = key_path.read_bytes()
+
+          now = int(time.time())
+
+          payload = {
+              "iss": "https://github.com/${{ github.repository_owner }}",
+              "sub": "repo:${{ github.repository }}:ref:${{ github.ref }}",
+              "aud": "https://oraclecloud.com/",   # OCI Trust の Audience に合わせる
+              "iat": now,
+              "exp": now + 60                      # 60 秒有効
+          }
+          headers = {"kid": "example-kid"}         # 任意。OCI で使う場合は適切に設定
+
+          token = jwt.encode(payload, private_key, algorithm="RS256", headers=headers)
+          print(f"JWT={token}")                    # マスクしないので注意
+          # GitHub Actions の出力変数にも設定
+          print(f"::set-output name=token::{token}")
+          PY
+
+      # 4) 成果物として鍵ペアと JWT をアップロード（必要なら）
+      - name: Upload keys & JWT
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const token = await core.getIDToken('https://oracle-cloud.com/');
-            core.setOutput('jwt', token);
+          name: jwt-and-keys
+          path: |
+            keys/public.pem
+            keys/private.pem
+          # JWT はテキストファイルにして保存したい場合
+          # echo "${{ steps.jwt.outputs.token }}" > jwt.txt
+          # jwt.txt
 
-      - name: Exchange JWT → UPST
-        run: |
-          PUB=$(awk 'NF {sub(/\r/,""); printf "%s\\n",$0}' ~/.oci/oci_upst_key.pem | \
-                openssl rsa -pubout 2>/dev/null | tr -d '\n')
-          curl -s https://identity.${{ env.OCI_REGION }}.oraclecloud.com/oauth2/v1/token \
-            -d "grant_type=token-exchange&subject_token=${{ steps.oidc.outputs.jwt }}&subject_token_type=urn:ietf:params:oauth:token-type:jwt&public_key=$PUB" > upst.json
-          echo "UPST=$(jq -r .token upst.json)" >> $GITHUB_ENV
-
-      - name: Call OCI API using UPST
-        env:
-          PRIVATE_KEY: ~/.oci/oci_upst_key.pem
-        run: |
-          oci raw-request --http-method GET \
-            --target-uri https://iaas.${{ env.OCI_REGION }}.oraclecloud.com/20160918/regions \
-            --auth security_token \
-            --security-token-env-var UPST \
-            --key-file $PRIVATE_KEY
