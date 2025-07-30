@@ -8,71 +8,40 @@ on:
         default: 'oci'
 
 jobs:
-  get-jwt:
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    
     steps:
-      - name: Get GitHub Actions JWT
+      - name: Restore private key
         run: |
-          # audienceを設定（空文字でも試す）
-          AUDIENCE="${{ github.event.inputs.audience || 'oci' }}"
-          echo "Using audience: '$AUDIENCE'"
-          
-          # 段階的にテスト
-          echo "=== Test 1: No audience ==="
-          RESPONSE1=$(curl -s \
-            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            -H "Accept: application/json; api-version=2.0" \
-            -H "User-Agent: actions/oidc-client" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL")
-          
-          echo "Response 1: $RESPONSE1"
-          JWT1=$(echo "$RESPONSE1" | jq -r '.value // "null"')
-          echo "JWT1 result: $([[ "$JWT1" != "null" && -n "$JWT1" ]] && echo "SUCCESS" || echo "FAILED")"
-          
-          echo "=== Test 2: With audience ==="
-          RESPONSE2=$(curl -s \
-            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            -H "Accept: application/json; api-version=2.0" \
-            -H "User-Agent: actions/oidc-client" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
-          
-          echo "Response 2: $RESPONSE2"
-          JWT2=$(echo "$RESPONSE2" | jq -r '.value // "null"')
-          echo "JWT2 result: $([[ "$JWT2" != "null" && -n "$JWT2" ]] && echo "SUCCESS" || echo "FAILED")"
-          
-          # 成功したJWTを使用
-          if [[ "$JWT1" != "null" && -n "$JWT1" ]]; then
-            JWT="$JWT1"
-            echo "Using JWT from test 1 (no audience)"
-          elif [[ "$JWT2" != "null" && -n "$JWT2" ]]; then
-            JWT="$JWT2"
-            echo "Using JWT from test 2 (with audience)"
-          else
-            echo "ERROR: Both tests failed"
-            exit 1
-          fi
-          
-          echo "=== Final JWT Info ==="
-          echo "JWT length: ${#JWT}"
-          
-          # JWTの内容をデコード
-          echo "Header:"
-          echo "$JWT" | cut -d'.' -f1 | base64 -d 2>/dev/null | jq . || echo "Failed to decode header"
-          echo "Payload:"
-          echo "$JWT" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq . || echo "Failed to decode payload"
-          
-          # ファイルに保存
-          echo "$JWT" > jwt_token.txt
-          echo "JWT saved to jwt_token.txt"
-          
-      - name: Upload JWT Token
-        if: success()
-        uses: actions/upload-artifact@v4
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_UPST_PRIVATE_KEY_PEM }}" > ~/.oci/oci_upst_key.pem
+          chmod 600 ~/.oci/oci_upst_key.pem
+
+      - name: Get OIDC JWT for this job
+        id: oidc
+        uses: actions/github-script@v7
         with:
-          name: jwt-token-${{ github.run_id }}
+          script: |
+            const token = await core.getIDToken('https://oracle-cloud.com/');
+            core.setOutput('jwt', token);
+
+      - name: Exchange JWT → UPST
+        run: |
+          PUB=$(awk 'NF {sub(/\r/,""); printf "%s\\n",$0}' ~/.oci/oci_upst_key.pem | \
+                openssl rsa -pubout 2>/dev/null | tr -d '\n')
+          curl -s https://identity.${{ env.OCI_REGION }}.oraclecloud.com/oauth2/v1/token \
+            -d "grant_type=token-exchange&subject_token=${{ steps.oidc.outputs.jwt }}&subject_token_type=urn:ietf:params:oauth:token-type:jwt&public_key=$PUB" > upst.json
+          echo "UPST=$(jq -r .token upst.json)" >> $GITHUB_ENV
+
+      - name: Call OCI API using UPST
+        env:
+          PRIVATE_KEY: ~/.oci/oci_upst_key.pem
+        run: |
+          oci raw-request --http-method GET \
+            --target-uri https://iaas.${{ env.OCI_REGION }}.oraclecloud.com/20160918/regions \
+            --auth security_token \
+            --security-token-env-var UPST \
+            --key-file $PRIVATE_KEY
+
           path: jwt_token.txt
           retention-days: 1
