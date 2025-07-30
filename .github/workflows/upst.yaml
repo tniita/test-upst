@@ -7,6 +7,10 @@ on:
         required: false
         default: 'oci'
 
+permissions:
+  id-token: write   # ★ OIDC を有効化
+  contents: read    # 例: リポジトリ読み取り権限
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
