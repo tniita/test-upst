@@ -1,41 +1,33 @@
-name: get-oidc-jwt
-on: workflow_dispatch
+name: upload-github-jwt
+on: workflow_dispatch          # 手動実行
 
 permissions:
-  id-token: write        # JWT を要求するのに必須
-  contents: read         # 例: actions/checkout を使う場合
+  id-token: write              # OIDC JWT を取得するのに必須
+  contents: read               # actions/checkout を使う場合など
 
 jobs:
-  issue-jwt:
+  fetch-and-upload:
     runs-on: ubuntu-latest
     steps:
-      # (任意) リポジトリをチェックアウト
+      # ① 必要ならリポジトリをチェックアウト（省略可）
       - uses: actions/checkout@v4
 
-      # ① actions/toolkit の getIDToken() で取得する例
-      - name: Get OIDC token (ToolKit)
-        id: get_token_toolkit
+      # ② GitHub の OIDC プロバイダーから JWT を取得
+      - name: Get OIDC token
+        id: oidc
         uses: actions/github-script@v7
         with:
           script: |
-            // audience はクラウド側で検証したい値
+            // audience（aud）を固定したい場合は書き換えてください
             const aud = 'https://example.com';
-            const idToken = await core.getIDToken(aud);  // audience 指定も可能:contentReference[oaicite:1]{index=1}
-            core.setOutput('jwt', idToken);
+            const token = await core.getIDToken(aud);
+            require('fs').writeFileSync('github_oidc_jwt.txt', token);
+            core.info(`Saved OIDC token to github_oidc_jwt.txt`);
 
-      # ② 環境変数 + curl だけで取得する例
-      - name: Get OIDC token (curl)
-        id: get_token_curl
-        run: |
-          aud='https://example.com'
-          resp=$(curl -sL \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")
-          echo "jwt=$(echo "$resp" | jq -r '.value')" >> "$GITHUB_OUTPUT"
-
-      # 確認用にマスクして出力
-      - name: Echo first 3 JWT claims (debug)
-        run: |
-          # `jq -R 'split(".") | .[0:3][]'` でヘッダー／ペイロード／署名部分を分割
-          echo "${{ steps.get_token_curl.outputs.jwt }}" | \
-            cut -d'.' -f1,2 | tr '.' '\n' | base64 -d | jq .
+      # ③ JWT を Artifact としてアップロード
+      - name: Upload JWT as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-oidc-jwt          # Artifact 名
+          path: github_oidc_jwt.txt      # アップロードするファイル
+          retention-days: 1              # 保存期間（1〜90 日で指定）
