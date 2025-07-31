@@ -1,45 +1,27 @@
-name: Generate JWT and RSA key pair
-on: workflow_dispatch   # 手動実行。定期実行なら cron を追加
-
-permissions:
-  id-token: write   # OIDC JWT を取得するため
-  contents: read
+name: Get GitHub Actions JWT
+on:
+  workflow_dispatch:  # 手動実行用
+  push:
+    branches: [main]
 
 jobs:
-  call-oci:
+  get-jwt:
     runs-on: ubuntu-latest
-
+    permissions:
+      id-token: write  # JWTトークン取得に必要
+      contents: read
+    
     steps:
-      - name: Get OIDC JWT (audience = OCI)
-        id: oidc
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const t = await core.getIDToken('https://oraclecloud.com/');
-            core.setOutput('jwt', t);
-
-      # 🔑 1) 鍵ペアを生成
-      - name: Gen RSA key
+      - name: Get GitHub Actions JWT
         run: |
-          openssl genrsa -out key.pem 2048
-          openssl rsa -pubout -in key.pem | tr -d '\n' > pub.txt
-
-      # 🔄 2) JWT ➜ UPST 交換（公開鍵だけ送る）
-      - name: Exchange for UPST
-        run: |
-          UPST=$(curl -s https://identity.${REGION}.oraclecloud.com/oauth2/v1/token \
-            -d "grant_type=token-exchange" \
-            -d "subject_token=${{ steps.oidc.outputs.jwt }}" \
-            -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
-            -d "public_key=$(cat pub.txt)" | jq -r .token)
-          echo "UPST=$UPST" >> $GITHUB_ENV
-      - name: Upload keys & JWT
-        uses: actions/upload-artifact@v4
-        with:
-          name: jwt-and-keys
-          path: |
-            keys/public.pem
-            keys/private.pem
-            echo "${{ steps.jwt.outputs.token }}" > jwt.txt
-            jwt.txt
-
+          # 環境変数からJWTを取得
+          echo "JWT Token: $ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          echo "JWT URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          
+          # JWTを実際に取得
+          JWT=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                     -H "Accept: application/json; api-version=2.0" \
+                     "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://github.com/your-org" \
+                     | jq -r '.value')
+          
+          echo "Generated JWT: $JWT"
