@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # ① 必要ならリポジトリをチェックアウト（省略可）
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ② GitHub の OIDC プロバイダーから JWT を取得
       - name: Get OIDC token
