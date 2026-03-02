@@ -26,7 +26,7 @@ jobs:
 
       # ③ JWT を Artifact としてアップロード
       - name: Upload JWT as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: github-oidc-jwt          # Artifact 名
           path: github_oidc_jwt.txt      # アップロードするファイル
